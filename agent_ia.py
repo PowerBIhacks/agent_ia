@@ -754,247 +754,342 @@ def charger_fichier(uploaded_file):
 # --- CONNECTEURS EN SIDEBAR ---
 
 # Fonction utilitaire pour charger CSV avec détection encodage
+import streamlit as st
+import pandas as pd
+import sqlalchemy
+import re
+import tempfile
+import sqlite3
+import requests
+from google.oauth2 import service_account
+from google.cloud import bigquery
+from pymongo import MongoClient
+from ftplib import FTP
+import paramiko
+import json
+
+# --- Fonctions utilitaires
 def charger_csv(fichier):
-    raw_data = fichier.read()
-    encodage = chardet.detect(raw_data)['encoding']
-    fichier.seek(0)
-    return pd.read_csv(fichier, encoding=encodage, sep=None, engine='python')
+    return pd.read_csv(fichier)
 
-with st.sidebar:
-    st.header("🔌 Connecteurs de données")
+# --- Sélection du type de source
+source_type = st.sidebar.selectbox("Type de source de données", [
+    "CSV / Excel",
+    "JSON",
+    "Parquet",
+    "Google Sheets",
+    "Base de données SQL",
+    "SQLite local",
+    "API REST (JSON)",
+    "Google BigQuery",
+    "MongoDB",
+    "FTP / SFTP",
+    "Google Drive (CSV / Excel)"
+])
 
-    source_type = st.selectbox("Choisir une source de données", [
-        "CSV / Excel",
-        "JSON",
-        "Parquet",
-        "Google Sheets",
-        "Base de données SQL",
-        "SQLite local",
-        "API REST (JSON)",
-        "Google BigQuery",
-        "MongoDB",
-        "FTP / SFTP",
-        "Google Drive (CSV / Excel)",
-    ])
+tables = {}
 
-    df = None
-
-    if source_type == "CSV / Excel":
-        fichier = st.file_uploader("📁 Importer un fichier CSV ou Excel", type=["csv", "xlsx"])
-        if fichier:
+if source_type == "CSV / Excel":
+    fichiers = st.sidebar.file_uploader("📁 Importer un ou plusieurs fichiers CSV ou Excel", type=["csv", "xlsx"], accept_multiple_files=True)
+    if fichiers:
+        for f in fichiers:
             try:
-                if fichier.name.endswith(".csv"):
-                    df = charger_csv(fichier)
+                if f.name.endswith(".csv"):
+                    tables[f.name] = charger_csv(f)
                 else:
-                    df = pd.read_excel(fichier)
-                st.success("✅ Fichier chargé avec succès")
+                    tables[f.name] = pd.read_excel(f)
             except Exception as e:
-                st.error(f"Erreur chargement : {e}")
+                st.error(f"Erreur lors du chargement de {f.name} : {e}")
+        st.sidebar.success(f"✅ {len(tables)} fichiers chargés : {list(tables.keys())}")
+        with st.sidebar.expander("📄 Aperçu des fichiers importés"):
+            for name, df in tables.items():
+                st.markdown(f"**{name}** ({df.shape[0]} lignes, {df.shape[1]} colonnes)")
+                st.dataframe(df.head(5))
 
-    elif source_type == "JSON":
-        fichier = st.file_uploader("📁 Importer un fichier JSON", type=["json"])
-        if fichier:
+elif source_type == "JSON":
+    fichier = st.sidebar.file_uploader("📁 Importer un fichier JSON", type=["json"])
+    if fichier:
+        try:
+            tables[fichier.name] = pd.read_json(fichier)
+            st.sidebar.success("✅ Fichier JSON chargé")
+            with st.sidebar.expander("📄 Aperçu JSON"):
+                st.dataframe(tables[fichier.name].head(5))
+        except Exception as e:
+            st.sidebar.error(f"Erreur chargement JSON : {e}")
+
+elif source_type == "Parquet":
+    fichier = st.sidebar.file_uploader("📁 Importer un fichier Parquet", type=["parquet"])
+    if fichier:
+        try:
+            tables[fichier.name] = pd.read_parquet(fichier)
+            st.sidebar.success("✅ Fichier Parquet chargé")
+            with st.sidebar.expander("📄 Aperçu Parquet"):
+                st.dataframe(tables[fichier.name].head(5))
+        except Exception as e:
+            st.sidebar.error(f"Erreur chargement Parquet : {e}")
+
+elif source_type == "Google Sheets":
+    gs_url = st.sidebar.text_input("🔗 Lien public Google Sheets")
+    if gs_url and "docs.google.com" in gs_url:
+        try:
+            sheet_id = gs_url.split("/d/")[1].split("/")[0]
+            csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+            tables["Google_Sheets"] = pd.read_csv(csv_url)
+            st.sidebar.success("✅ Données Google Sheets chargées")
+            with st.sidebar.expander("📄 Aperçu Google Sheets"):
+                st.dataframe(tables["Google_Sheets"].head(5))
+        except Exception as e:
+            st.sidebar.error(f"Erreur Google Sheets : {e}")
+
+elif source_type == "Base de données SQL":
+    st.sidebar.markdown("Connexion à une base SQL (MySQL, PostgreSQL, SQL Server)")
+    db_type = st.sidebar.selectbox("Type", ["MySQL", "PostgreSQL", "SQL Server"])
+    host = st.sidebar.text_input("Hôte", value="localhost")
+    port = st.sidebar.text_input("Port", value={"MySQL": "3306", "PostgreSQL": "5432", "SQL Server": "1433"}[db_type])
+    db_name = st.sidebar.text_input("Nom de la base")
+    user = st.sidebar.text_input("Utilisateur")
+    pwd = st.sidebar.text_input("Mot de passe", type="password")
+    requetes = st.sidebar.text_area("Requêtes SQL (séparées par ;)\nEx: SELECT * FROM ventes; SELECT * FROM clients", "SELECT * FROM ventes;\nSELECT * FROM clients")
+
+    if st.sidebar.button("Se connecter et charger"):
+        try:
+            if db_type == "MySQL":
+                engine = sqlalchemy.create_engine(f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{db_name}")
+            elif db_type == "PostgreSQL":
+                engine = sqlalchemy.create_engine(f"postgresql://{user}:{pwd}@{host}:{port}/{db_name}")
+            else:
+                engine = sqlalchemy.create_engine(f"mssql+pyodbc://{user}:{pwd}@{host}:{port}/{db_name}?driver=ODBC+Driver+17+for+SQL+Server")
+
+            requetes_list = [r.strip() for r in requetes.split(';') if r.strip()]
+            for req in requetes_list:
+                nom_table = re.findall(r"FROM (\w+)", req, re.IGNORECASE)
+                nom_table = nom_table[0] if nom_table else f"table_{len(tables)+1}"
+                df_result = pd.read_sql_query(req, engine)
+
+                for col in df_result.select_dtypes(include=["object"]).columns:
+                    df_result[col] = df_result[col].apply(lambda x: x.encode("latin1").decode("utf-8", errors="ignore") if isinstance(x, str) else x)
+
+                tables[nom_table] = df_result
+
+            st.sidebar.success(f"✅ {len(tables)} tables chargées depuis SQL : {list(tables.keys())}")
+            with st.sidebar.expander("📄 Aperçu des tables SQL"):
+                for name, df in tables.items():
+                    st.markdown(f"**{name}** ({df.shape[0]} lignes, {df.shape[1]} colonnes)")
+                    st.dataframe(df.head(5))
+
+        except Exception as e:
+            st.sidebar.error(f"Erreur SQL : {e}")
+
+elif source_type == "SQLite local":
+    sqlite_file = st.sidebar.file_uploader("📁 Importer un fichier SQLite (.db, .sqlite)", type=["db", "sqlite"])
+    if sqlite_file:
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                tmp_file.write(sqlite_file.read())
+                tmp_path = tmp_file.name
+            conn = sqlite3.connect(tmp_path)
+            tables_sqlite = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table';", conn)
+            table_name = st.sidebar.selectbox("Choisir une table", tables_sqlite['name'].tolist())
+            if st.sidebar.button("Charger la table"):
+                df_sqlite = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+                tables[table_name] = df_sqlite
+                st.sidebar.success(f"✅ Table '{table_name}' chargée")
+                conn.close()
+        except Exception as e:
+            st.sidebar.error(f"Erreur SQLite : {e}")
+
+elif source_type == "API REST (JSON)":
+    api_url = st.sidebar.text_input("URL de l'API REST retournant du JSON")
+    if st.sidebar.button("Charger les données"):
+        try:
+            r = requests.get(api_url)
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, list):
+                tables["API_JSON"] = pd.DataFrame(data)
+            elif isinstance(data, dict):
+                tables["API_JSON"] = pd.json_normalize(data)
+            else:
+                st.sidebar.error("Format JSON non supporté")
+            st.sidebar.success("✅ Données API chargées")
+        except Exception as e:
+            st.sidebar.error(f"Erreur API REST : {e}")
+
+elif source_type == "Google BigQuery":
+    credentials_json = st.sidebar.text_area("Clé JSON service account Google Cloud (BigQuery)", height=200)
+    project_id = st.sidebar.text_input("ID du projet Google Cloud")
+    query = st.sidebar.text_area("Requête SQL BigQuery")
+    if st.sidebar.button("Exécuter la requête BigQuery"):
+        try:
+            credentials = service_account.Credentials.from_service_account_info(json.loads(credentials_json))
+            client_bq = bigquery.Client(credentials=credentials, project=project_id)
+            df_bq = client_bq.query(query).to_dataframe()
+            tables["BigQuery"] = df_bq
+            st.sidebar.success("✅ Requête BigQuery exécutée")
+            with st.sidebar.expander("📄 Aperçu BigQuery"):
+                st.dataframe(df_bq.head(5))
+        except Exception as e:
+            st.sidebar.error(f"Erreur BigQuery : {e}")
+
+elif source_type == "MongoDB":
+    mongo_uri = st.sidebar.text_input("URI MongoDB (ex: mongodb://user:pwd@host:port/db)")
+    db_name_mongo = st.sidebar.text_input("Nom base MongoDB")
+    collection_name = st.sidebar.text_input("Nom collection")
+    if st.sidebar.button("Charger MongoDB"):
+        try:
+            client_mongo = MongoClient(mongo_uri)
+            db_mongo = client_mongo[db_name_mongo]
+            collection = db_mongo[collection_name]
+            data = list(collection.find())
+            tables["MongoDB"] = pd.DataFrame(data)
+            st.sidebar.success("✅ Données MongoDB chargées")
+            with st.sidebar.expander("📄 Aperçu MongoDB"):
+                st.dataframe(tables["MongoDB"].head(5))
+        except Exception as e:
+            st.sidebar.error(f"Erreur MongoDB : {e}")
+
+elif source_type == "FTP / SFTP":
+    ftp_type = st.sidebar.selectbox("Protocole", ["FTP", "SFTP"])
+    host = st.sidebar.text_input("Hôte")
+    port = st.sidebar.text_input("Port", value="21" if ftp_type == "FTP" else "22")
+    user = st.sidebar.text_input("Utilisateur")
+    pwd = st.sidebar.text_input("Mot de passe", type="password")
+
+    if ftp_type == "FTP":
+        if st.sidebar.button("Liste fichiers FTP"):
             try:
-                df = pd.read_json(fichier)
-                st.success("✅ Fichier JSON chargé")
+                ftp = FTP()
+                ftp.connect(host, int(port))
+                ftp.login(user, pwd)
+                files = ftp.nlst()
+                ftp.quit()
+                file_choice = st.sidebar.selectbox("Fichiers disponibles", files)
+                if st.sidebar.button("Charger fichier FTP"):
+                    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                        ftp = FTP()
+                        ftp.connect(host, int(port))
+                        ftp.login(user, pwd)
+                        ftp.retrbinary(f"RETR {file_choice}", tmp_file.write)
+                        ftp.quit()
+                        tmp_file_path = tmp_file.name
+                    tables[file_choice] = pd.read_csv(tmp_file_path)
+                    st.sidebar.success(f"✅ Fichier '{file_choice}' chargé depuis FTP")
             except Exception as e:
-                st.error(f"Erreur chargement JSON : {e}")
+                st.sidebar.error(f"Erreur FTP : {e}")
 
-    elif source_type == "Parquet":
-        fichier = st.file_uploader("📁 Importer un fichier Parquet", type=["parquet"])
-        if fichier:
+    else:  # SFTP
+        if st.sidebar.button("Liste fichiers SFTP"):
             try:
-                df = pd.read_parquet(fichier)
-                st.success("✅ Fichier Parquet chargé")
-            except Exception as e:
-                st.error(f"Erreur chargement Parquet : {e}")
-
-    elif source_type == "Google Sheets":
-        gs_url = st.text_input("🔗 Lien public Google Sheets")
-        if gs_url and "docs.google.com" in gs_url:
-            try:
-                sheet_id = gs_url.split("/d/")[1].split("/")[0]
-                csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-                df = pd.read_csv(csv_url)
-                st.success("✅ Données Google Sheets chargées")
-            except Exception as e:
-                st.error(f"Erreur Google Sheets : {e}")
-
-    elif source_type == "Base de données SQL":
-        st.markdown("Connexion à une base SQL (MySQL, PostgreSQL, SQL Server)")
-        db_type = st.selectbox("Type", ["MySQL", "PostgreSQL", "SQL Server"])
-        host = st.text_input("Hôte", value="localhost")
-        port = st.text_input("Port", value={
-            "MySQL": "3306",
-            "PostgreSQL": "5432",
-            "SQL Server": "1433"
-        }[db_type])
-        db_name = st.text_input("Nom de la base")
-        user = st.text_input("Utilisateur")
-        pwd = st.text_input("Mot de passe", type="password")
-        requete = st.text_area("Requête SQL", "SELECT * FROM votre_table")
-
-        if st.button("Se connecter et charger"):
-            try:
-                if db_type == "MySQL":
-                    engine = sqlalchemy.create_engine(f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{db_name}")
-                elif db_type == "PostgreSQL":
-                    engine = sqlalchemy.create_engine(f"postgresql://{user}:{pwd}@{host}:{port}/{db_name}")
-                else:  # SQL Server
-                    engine = sqlalchemy.create_engine(f"mssql+pyodbc://{user}:{pwd}@{host}:{port}/{db_name}?driver=ODBC+Driver+17+for+SQL+Server")
-                df = pd.read_sql_query(requete, engine)
-
-
-                # Convertir les colonnes texte vers UTF-8 en ignorant les erreurs
-                for col in df.select_dtypes(include=["object"]).columns:
-                    df[col] = df[col].apply(lambda x: x.encode("latin1").decode("utf-8", errors="ignore") if isinstance(x, str) else x)
-
-                st.success("✅ Données SQL chargées")
-            except Exception as e:
-                st.error(f"Erreur de connexion SQL : {e}")
-
-    elif source_type == "SQLite local":
-        sqlite_file = st.file_uploader("📁 Importer un fichier SQLite (.db, .sqlite)", type=["db", "sqlite"])
-        if sqlite_file:
-            try:
-                with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-                    tmp_file.write(sqlite_file.read())
-                    tmp_path = tmp_file.name
-                conn = sqlite3.connect(tmp_path)
-                tables = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table';", conn)
-                table_name = st.selectbox("Choisir une table", tables['name'].tolist())
-                if st.button("Charger la table"):
-                    df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
-                    st.success(f"✅ Table '{table_name}' chargée")
-                    conn.close()
-            except Exception as e:
-                st.error(f"Erreur SQLite : {e}")
-
-    elif source_type == "API REST (JSON)":
-        api_url = st.text_input("URL de l'API REST retournant du JSON")
-        if st.button("Charger les données"):
-            try:
-                r = requests.get(api_url)
-                r.raise_for_status()
-                data = r.json()
-                # On essaye de convertir en DataFrame (extraction automatique)
-                if isinstance(data, list):
-                    df = pd.DataFrame(data)
-                elif isinstance(data, dict):
-                    df = pd.json_normalize(data)
-                else:
-                    st.error("Format JSON non supporté")
-                    df = None
-                if df is not None:
-                    st.success("✅ Données API chargées")
-            except Exception as e:
-                st.error(f"Erreur API REST : {e}")
-
-    elif source_type == "Google BigQuery":
-        credentials_json = st.text_area("Clé JSON service account Google Cloud (BigQuery)", height=200)
-        project_id = st.text_input("ID du projet Google Cloud")
-        query = st.text_area("Requête SQL BigQuery")
-        if st.button("Exécuter la requête BigQuery"):
-            try:
-                credentials = service_account.Credentials.from_service_account_info(json.loads(credentials_json))
-                client_bq = bigquery.Client(credentials=credentials, project=project_id)
-                df = client_bq.query(query).to_dataframe()
-                st.success("✅ Requête BigQuery exécutée")
-            except Exception as e:
-                st.error(f"Erreur BigQuery : {e}")
-
-    elif source_type == "MongoDB":
-        mongo_uri = st.text_input("URI MongoDB (ex: mongodb://user:pwd@host:port/db)")
-        db_name = st.text_input("Nom base MongoDB")
-        collection_name = st.text_input("Nom collection")
-        if st.button("Charger MongoDB"):
-            try:
-                client_mongo = MongoClient(mongo_uri)
-                db_mongo = client_mongo[db_name]
-                collection = db_mongo[collection_name]
-                data = list(collection.find())
-                df = pd.DataFrame(data)
-                st.success("✅ Données MongoDB chargées")
-            except Exception as e:
-                st.error(f"Erreur MongoDB : {e}")
-
-    elif source_type == "FTP / SFTP":
-        ftp_type = st.selectbox("Protocole", ["FTP", "SFTP"])
-        host = st.text_input("Hôte")
-        port = st.text_input("Port", value="21" if ftp_type == "FTP" else "22")
-        user = st.text_input("Utilisateur")
-        pwd = st.text_input("Mot de passe", type="password")
-
-        if ftp_type == "FTP":
-            if st.button("Liste fichiers FTP"):
-                try:
-                    ftp = FTP()
-                    ftp.connect(host, int(port))
-                    ftp.login(user, pwd)
-                    files = ftp.nlst()
-                    ftp.quit()
-                    file_choice = st.selectbox("Fichiers disponibles", files)
-                    if st.button("Charger fichier FTP"):
-                        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-                            ftp = FTP()
-                            ftp.connect(host, int(port))
-                            ftp.login(user, pwd)
-                            ftp.retrbinary(f"RETR {file_choice}", tmp_file.write)
-                            ftp.quit()
-                            tmp_file_path = tmp_file.name
-                        df = pd.read_csv(tmp_file_path)
-                        st.success(f"✅ Fichier '{file_choice}' chargé depuis FTP")
-                except Exception as e:
-                    st.error(f"Erreur FTP : {e}")
-
-        else:  # SFTP
-            sftp_host = host
-            sftp_port = int(port)
-            sftp_user = user
-            sftp_pwd = pwd
-            if st.button("Liste fichiers SFTP"):
-                try:
-                    transport = paramiko.Transport((sftp_host, sftp_port))
-                    transport.connect(username=sftp_user, password=sftp_pwd)
+                transport = paramiko.Transport((host, int(port)))
+                transport.connect(username=user, password=pwd)
+                sftp = paramiko.SFTPClient.from_transport(transport)
+                files = sftp.listdir()
+                transport.close()
+                file_choice = st.sidebar.selectbox("Fichiers disponibles", files)
+                if st.sidebar.button("Charger fichier SFTP"):
+                    transport = paramiko.Transport((host, int(port)))
+                    transport.connect(username=user, password=pwd)
                     sftp = paramiko.SFTPClient.from_transport(transport)
-                    files = sftp.listdir()
+                    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                        sftp.get(file_choice, tmp_file.name)
+                        tmp_path = tmp_file.name
+                    sftp.close()
                     transport.close()
-                    file_choice = st.selectbox("Fichiers disponibles", files)
-                    if st.button("Charger fichier SFTP"):
-                        transport = paramiko.Transport((sftp_host, sftp_port))
-                        transport.connect(username=sftp_user, password=sftp_pwd)
-                        sftp = paramiko.SFTPClient.from_transport(transport)
-                        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-                            sftp.get(file_choice, tmp_file.name)
-                            tmp_path = tmp_file.name
-                        sftp.close()
-                        transport.close()
-                        df = pd.read_csv(tmp_path)
-                        st.success(f"✅ Fichier '{file_choice}' chargé depuis SFTP")
-                except Exception as e:
-                    st.error(f"Erreur SFTP : {e}")
-
-    elif source_type == "Google Drive (CSV / Excel)":
-        from pydrive.auth import GoogleAuth
-        from pydrive.drive import GoogleDrive
-
-        file_id = st.text_input("ID du fichier Google Drive (CSV ou Excel)")
-        if st.button("Charger fichier Google Drive"):
-            try:
-                # Authentification automatique simplifiée (attention : config OAuth nécessaire)
-                gauth = GoogleAuth()
-                gauth.LocalWebserverAuth()
-                drive = GoogleDrive(gauth)
-                downloaded = drive.CreateFile({'id': file_id})
-                downloaded.GetContentFile('tempfile')
-
-                if file_id.endswith('.csv'):
-                    df = pd.read_csv('tempfile')
-                else:
-                    df = pd.read_excel('tempfile')
-                st.success("✅ Fichier Google Drive chargé")
+                    tables[file_choice] = pd.read_csv(tmp_path)
+                    st.sidebar.success(f"✅ Fichier '{file_choice}' chargé depuis SFTP")
             except Exception as e:
-                st.error(f"Erreur Google Drive : {e}")
+                st.sidebar.error(f"Erreur SFTP : {e}")
+
+elif source_type == "Google Drive (CSV / Excel)":
+    from pydrive.auth import GoogleAuth
+    from pydrive.drive import GoogleDrive
+
+    file_id = st.sidebar.text_input("ID du fichier Google Drive (CSV ou Excel)")
+    if st.sidebar.button("Charger fichier Google Drive"):
+        try:
+            gauth = GoogleAuth()
+            gauth.LocalWebserverAuth()
+            drive = GoogleDrive(gauth)
+            downloaded = drive.CreateFile({'id': file_id})
+            downloaded.GetContentFile('tempfile')
+
+            if file_id.endswith('.csv'):
+                tables[file_id] = pd.read_csv('tempfile')
+            else:
+                tables[file_id] = pd.read_excel('tempfile')
+            st.sidebar.success("✅ Fichier Google Drive chargé")
+        except Exception as e:
+            st.sidebar.error(f"Erreur Google Drive : {e}")
+            
+# --- Vérification intelligente de correspondance entre colonnes
+def verifier_correspondance(df1, df2, col1, col2, seuil=0.7):
+    if col1 not in df1.columns or col2 not in df2.columns:
+        return False
+    valeurs_1 = set(df1[col1].dropna().unique())
+    valeurs_2 = set(df2[col2].dropna().unique())
+
+    if not valeurs_1 or not valeurs_2:
+        return False
+
+    intersection = valeurs_1 & valeurs_2
+    taux_1 = len(intersection) / len(valeurs_1)
+    taux_2 = len(intersection) / len(valeurs_2)
+
+    return taux_1 >= seuil or taux_2 >= seuil
+
+# --- Gestion des tables / modèle relationnel intelligent
+if tables:
+    if len(tables) == 1:
+        nom_unique = list(tables.keys())[0]
+        st.session_state["df"] = tables[nom_unique]
+        st.success(f"✅ Fichier unique détecté : **{nom_unique}** chargé automatiquement")
+    else:
+        st.subheader("🔗 Modèle relationnel intelligent")
+        primary_keys = {}
+        relations = {}
+
+        for tbl in tables:
+            cols = tables[tbl].columns.tolist()
+            primary_keys[tbl] = st.selectbox(f"Clé primaire pour '{tbl}'", options=cols, key=f"pk_{tbl}_{source_type}")
+
+        valid_relations = []
+        incoherence_detectee = False  # Initialisation
+
+        for source_table, pk_source in primary_keys.items():
+            for target_table, pk_target in primary_keys.items():
+                if source_table != target_table:
+                    df_source = tables[source_table]
+                    df_target = tables[target_table]
+                    match_ok = verifier_correspondance(df_source, df_target, pk_source, pk_target)
+
+                    if match_ok:
+                        if st.checkbox(f"✅ Colonnes compatibles : {source_table}.{pk_source} = {target_table}.{pk_target}", key=f"check_{source_table}_{target_table}"):
+                            valid_relations.append((source_table, pk_source, target_table, pk_target))
+                    else:
+                        st.warning(f"❌ Les colonnes '{source_table}.{pk_source}' et '{target_table}.{pk_target}' ne correspondent pas suffisamment pour une jointure fiable.")
+                        incoherence_detectee = True  # Marque incohérence
+
+        # Affiche le bouton uniquement s'il n'y a aucune incohérence détectée et si on a au moins une relation valide
+        if not incoherence_detectee and valid_relations:
+            if st.button("Créer modèle relationnel", key="creer_modele_relationnel_btn"):
+                base_table, base_pk = valid_relations[0][0], valid_relations[0][1]
+                df_merge = tables[base_table]
+                for source, pk1, target, pk2 in valid_relations:
+                    if source == base_table:
+                        df_merge = pd.merge(df_merge, tables[target], left_on=pk1, right_on=pk2, how="left")
+                st.session_state["df"] = df_merge
+                st.success("✅ Modèle relationnel créé avec succès")
+        else:
+            if incoherence_detectee:
+                st.error("❌ Incohérences détectées : impossible de créer un modèle relationnel fiable.")
+            elif not valid_relations:
+                st.error("❌ Aucune correspondance de clé valide détectée. Modèle relationnel non créé.")
+
+# --- Fallback : si aucune modélisation, on prend la première table 'ventes' si existante
+if "df" not in st.session_state and "ventes" in tables:
+    st.session_state["df"] = tables["ventes"]
+
+df = st.session_state.get("df", None)
 
 # --- TRAITEMENT DES DONNEES ---
 
