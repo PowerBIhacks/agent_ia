@@ -36,6 +36,15 @@ import matplotlib.pyplot as plt
 import chardet
 
 
+
+
+
+
+
+
+
+
+
 # --- CONFIG STREAMLIT --- #
 st.set_page_config(page_title="Agent IA sécurisé", layout="wide", page_icon="📊")
 st.markdown("""
@@ -84,6 +93,15 @@ def verifier_utilisateur(email, password):
         st.error(f"❌ Erreur de lecture users.json : {e}")
         return False
 
+
+
+
+
+
+
+
+
+
 # --- Interface connexion ---
 if "authentifie" not in st.session_state:
     st.session_state.authentifie = False
@@ -116,6 +134,12 @@ def generer_suggestions(df):
     # etc.
 
 
+
+
+
+
+
+
 # --- FONCTIONS UTILITAIRES --- #
 
 def hash_dataframe(df):
@@ -145,6 +169,16 @@ def sauvegarder_session(email, resume, suggestions):
     except Exception as e:
         st.warning(f"Erreur de sauvegarde : {e}")
 
+
+
+
+
+
+
+
+
+
+
 # --- DETECTION DU DOMAINE --- #
 
 def detecter_domaine(df):
@@ -170,7 +204,18 @@ def detecter_domaine(df):
     elif any(kw in texte for kw in ["pourboir","prix par personne","heure de repas","nombre de personne","chambre"]):
         return "hotel"
     else:
+
         return "autre"
+
+
+
+
+
+
+
+
+
+
 
 # --- AFFICHAGE KPIS --- #
 
@@ -529,6 +574,11 @@ def afficher_kpis(df, domaine):
 
 
 
+
+
+
+
+
 # --- CREATION DE FIGURES --- #
 
 def creer_figure(type_graph, df, cols):
@@ -577,6 +627,14 @@ def creer_figure(type_graph, df, cols):
         return None
 
 
+
+
+
+
+
+
+
+
 st.subheader("📊 Résultats de l’analyse")
 # --- AFFICHAGE GRAPHIQUES --- #
 
@@ -613,6 +671,15 @@ def afficher_graphique(df, suggestion, container):
         container.plotly_chart(fig, use_container_width=True)
     else:
         pass
+
+
+
+
+
+
+
+
+
 
 # --- GENERER SUGGESTIONS VIA COHERE --- #
 
@@ -662,6 +729,15 @@ Seulement une liste JSON.
         st.error(f"❌ Erreur Cohere : {e}")
         return []
 
+
+
+
+
+
+
+
+
+
 # --- GENERER RESUME --- #
 
 def generer_resume(df):
@@ -695,6 +771,15 @@ Sois concis et précis.
     except Exception as e:
         return f"Erreur Cohere : {e}"
 
+
+
+
+
+
+
+
+
+
 # --- FONCTION DE SAUVEGARDE --- #
 
 def sauvegarder_session(utilisateur, resume, suggestions):
@@ -707,6 +792,14 @@ def sauvegarder_session(utilisateur, resume, suggestions):
         f.write("Suggestions :\n")
         for sugg in suggestions:
             f.write(f"- {sugg.get('objectif', 'Sans description')}\n")
+
+
+
+
+
+
+
+
 
 # --- APPEL DANS LE FLUX PRINCIPAL --- #
 
@@ -730,6 +823,14 @@ if "utilisateur" in st.session_state and df is not None:
 
     # Sauvegarde dans le fichier log
     sauvegarder_session(st.session_state.utilisateur, resume, suggestions)
+    
+    
+    
+    
+    
+    
+    
+    
 
 # --- INTERFACE PRINCIPALE --- #
 
@@ -743,12 +844,17 @@ st.title("🔍 Analyse intelligente des données")
 
 ECHANTILLON_IA = 2000  # Ta variable d'échantillon IA, à définir plus haut dans ton script
 
-
 @st.cache_data(show_spinner="📊 Chargement du fichier en cours...", max_entries=10)
 def charger_fichier(uploaded_file):
     raw_data = uploaded_file.read()
     encodage_detecte = chardet.detect(raw_data)
     uploaded_file.seek(0)
+
+
+
+
+
+
 
 
 # --- CONNECTEURS EN SIDEBAR ---
@@ -770,7 +876,25 @@ import json
 
 # --- Fonctions utilitaires
 def charger_csv(fichier):
-    return pd.read_csv(fichier)
+    # Détection automatique de l'encodage
+    raw_data = fichier.read()
+    result = chardet.detect(raw_data)
+    encoding = result['encoding'] or 'utf-8'
+
+    # Tentatives avec différents séparateurs
+    for sep in [';', ',', '\t']:
+        try:
+            from io import StringIO
+            decoded = raw_data.decode(encoding)
+            df = pd.read_csv(StringIO(decoded), sep=sep)
+            # S'assurer qu'il y a plusieurs colonnes
+            if df.shape[1] > 1:
+                return df
+        except Exception as e:
+            continue
+
+    # Dernière tentative, avec un fallback
+    return pd.read_csv(StringIO(decoded), sep=';', encoding=encoding, error_bad_lines=False)
 
 # --- Sélection du type de source
 source_type = st.sidebar.selectbox("Type de source de données", [
@@ -1062,6 +1186,12 @@ def verifier_correspondance(df1, df2, col1, col2, seuil=0.7):
 
     return taux_1 >= seuil or taux_2 >= seuil
 
+
+
+
+
+
+
 # --- Gestion des tables / modèle relationnel intelligent
 if tables:
     if len(tables) == 1:
@@ -1116,6 +1246,21 @@ if "df" not in st.session_state and "ventes" in tables:
 
 df = st.session_state.get("df", None)
 
+
+
+
+
+
+
+
+
+
+
+###########################
+############################
+############################
+############################
+############################
 # --- TRAITEMENT DES DONNEES ---
 
 if df is not None:
