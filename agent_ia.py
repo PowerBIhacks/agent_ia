@@ -790,21 +790,46 @@ source_type = st.sidebar.selectbox("Type de source de données", [
 tables = {}
 
 if source_type == "CSV / Excel":
-    fichiers = st.sidebar.file_uploader("📁 Importer un ou plusieurs fichiers CSV ou Excel", type=["csv", "xlsx"], accept_multiple_files=True)
+    fichiers = st.sidebar.file_uploader(
+        "📁 Importer un ou plusieurs fichiers CSV ou Excel",
+        type=["csv", "xlsx"],
+        accept_multiple_files=True
+    )
+
     if fichiers:
+        if "cles_primaires" not in st.session_state:
+            st.session_state.cles_primaires = {}
+
         for f in fichiers:
             try:
                 if f.name.endswith(".csv"):
-                    tables[f.name] = charger_csv(f)
+                    df = charger_csv(f)
                 else:
-                    tables[f.name] = pd.read_excel(f)
+                    df = pd.read_excel(f)
+
+                tables[f.name] = df
+
+                # ✅ S’il y a plusieurs fichiers → demander la clé primaire
+                if len(fichiers) > 1:
+                    with st.expander(f"🔑 Choix de la clé primaire pour **{f.name}**"):
+                        colonne = st.selectbox(
+                            "Sélectionner la colonne servant de clé primaire :",
+                            options=list(df.columns),  # ✅ liste propre des colonnes
+                            key=f"selectbox_{f.name}"
+                        )
+                        st.session_state.cles_primaires[f.name] = colonne
+                        st.success(f"Clé primaire de `{f.name}` : **{colonne}**")
+
             except Exception as e:
                 st.error(f"Erreur lors du chargement de {f.name} : {e}")
+
         st.sidebar.success(f"✅ {len(tables)} fichiers chargés : {list(tables.keys())}")
+
         with st.sidebar.expander("📄 Aperçu des fichiers importés"):
             for name, df in tables.items():
                 st.markdown(f"**{name}** ({df.shape[0]} lignes, {df.shape[1]} colonnes)")
                 st.dataframe(df.head(5))
+
 
 elif source_type == "JSON":
     fichier = st.sidebar.file_uploader("📁 Importer un fichier JSON", type=["json"])
